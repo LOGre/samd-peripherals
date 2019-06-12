@@ -27,11 +27,14 @@
 #include "samd/clocks.h"
 
 #include "hpl_gclk_config.h"
+#include "hpl_oscctrl_config.h"
 
 #include "bindings/samd/Clock.h"
 #include "shared-bindings/microcontroller/__init__.h"
 
 #include "py/runtime.h"
+
+#include <stdio.h>
 
 bool gclk_enabled(uint8_t gclk) {
     return GCLK->GENCTRL[gclk].bit.GENEN;
@@ -79,6 +82,53 @@ void disable_clock_generator(uint8_t gclk) {
     while ((GCLK->SYNCBUSY.vec.GENCTRL & (1 << gclk)) != 0) {}
 }
 
+uint32_t compute_cpu_frequency(void) {
+
+    // fCLK_DPLL0 = fCKR * (LDR + 1 + (LDRFRAC/32))
+    uint32_t dpll0;
+    uint32_t ckr;
+
+    uint32_t gclk_dpll = (GCLK->PCHCTRL[OSCCTRL_GCLK_ID_FDPLL0].reg & GCLK_PCHCTRL_GEN_Msk) >> GCLK_PCHCTRL_GEN_Pos;
+    uint32_t ldr = (OSCCTRL->Dpll[0].DPLLRATIO.reg & OSCCTRL_DPLLRATIO_LDR_Msk) >> OSCCTRL_DPLLRATIO_LDR_Pos;
+    uint32_t ldrfrac = (OSCCTRL->Dpll[0].DPLLRATIO.reg & OSCCTRL_DPLLRATIO_LDRFRAC_Msk) >> OSCCTRL_DPLLRATIO_LDRFRAC_Pos;
+
+    uint32_t clock_gen = GCLK->GENCTRL[gclk_dpll].reg;
+    uint32_t src = (clock_gen & GCLK_GENCTRL_SRC_Msk) >> GCLK_GENCTRL_SRC_Pos;
+    uint32_t divisor = (clock_gen & GCLK_GENCTRL_DIV_Msk) >> GCLK_GENCTRL_DIV_Pos;
+    uint32_t divsel = 0;
+
+    if(divisor > 255) {
+        divsel = GCLK_GENCTRL_DIVSEL;
+        divisor = divisor*divsel;
+    }
+
+    switch(src) {
+        case GCLK_GENCTRL_SRC_DFLL_Val:
+            ckr = 48000000/divisor;
+            break;
+        case GCLK_GENCTRL_SRC_XOSC0_Val:
+            ckr = CONF_XOSC0_FREQUENCY/divisor;
+            break;
+        case GCLK_GENCTRL_SRC_XOSC1_Val:
+            ckr = CONF_XOSC1_FREQUENCY/divisor;
+            break;        
+        case GCLK_GENCTRL_SRC_OSCULP32K_Val:
+        case GCLK_GENCTRL_SRC_XOSC32K_Val:
+        case GCLK_GENCTRL_SRC_DPLL1_Val:    //#define CONF_FDPLL1_GCLK GCLK_GENCTRL_SRC_XOSC32K
+            ckr = 32768/divisor;
+            break;                          
+        //TODO: find how to get those frequencies
+        case GCLK_GENCTRL_SRC_GCLKIN_Val:
+        case GCLK_GENCTRL_SRC_GCLKGEN1_Val:
+        //case CONF_FDPLL0_GCLK: -> due to #define CONF_FDPLL0_GCLK GCLK_PCHCTRL_GEN_GCLK5_Val
+            ckr = 0;
+            break;
+    }                      
+
+    dpll0 = ckr * (ldr + 1 + (ldrfrac/32));
+    return dpll0;
+}
+
 static void init_clock_source_osculp32k(void) {
     // Calibration value is loaded at startup
     OSC32KCTRL->OSCULP32K.bit.EN1K = 1;
@@ -96,7 +146,7 @@ static void init_clock_source_xosc32k(void) {
 static void init_clock_source_dpll0(void)
 {
     GCLK->PCHCTRL[OSCCTRL_GCLK_ID_FDPLL0].reg = GCLK_PCHCTRL_CHEN | GCLK_PCHCTRL_GEN(5);
-    OSCCTRL->Dpll[0].DPLLRATIO.reg = OSCCTRL_DPLLRATIO_LDRFRAC(0) | OSCCTRL_DPLLRATIO_LDR(59);
+    OSCCTRL->Dpll[0].DPLLRATIO.reg = OSCCTRL_DPLLRATIO_LDRFRAC(0) | OSCCTRL_DPLLRATIO_LDR(99);
     OSCCTRL->Dpll[0].DPLLCTRLB.reg = OSCCTRL_DPLLCTRLB_REFCLK(0);
     OSCCTRL->Dpll[0].DPLLCTRLA.reg = OSCCTRL_DPLLCTRLA_ENABLE;
 
